@@ -7,6 +7,8 @@ from tkinter import ttk
 import random
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography import x509
+from cryptography.x509.oid import NameOID
 
 private_key = rsa.generate_private_key(
     public_exponent=65537,
@@ -43,10 +45,7 @@ def create_signature():
     f"Страна: {country}")
 
     current_data_bytes = data_block.encode("utf-8")
-   
 
-    
-    
     issue_date = datetime.datetime.now()
     expire_date = issue_date + datetime.timedelta(days=365)
     serial_number = hex(random.getrandbits(64))[2:].upper()
@@ -55,7 +54,6 @@ def create_signature():
     encoding=serialization.Encoding.DER,
     format=serialization.PublicFormat.SubjectPublicKeyInfo)
     fingerprint_key = hashlib.sha256(pub_bytes).hexdigest().upper()
-
 
     current_signature = private_key.sign(
         current_data_bytes,
@@ -111,7 +109,6 @@ def verify_from_file():
         signature_block = content[s_start:s_end]
         signature_block = "".join(signature_block.split())  
 
-        
         k_start = content.index("-----BEGIN PUBLIC KEY-----")
         k_end = content.index("-----END PUBLIC KEY-----") + len("-----END PUBLIC KEY-----")
         public_key_text = content[k_start:k_end]
@@ -122,7 +119,6 @@ def verify_from_file():
         loaded_public_key = serialization.load_pem_public_key(
             public_key_text.encode("utf-8")
         )
-
         loaded_public_key.verify(
             signature,
             data_bytes,
@@ -132,9 +128,7 @@ def verify_from_file():
             ),
             hashes.SHA256()
         )
-
         messagebox.showinfo("Проверка", "Подпись верная 😎")
-
     except Exception as e:
         messagebox.showerror("Проверка", "Подпись испорчена 💔")
 
@@ -168,6 +162,12 @@ def generate_certificate_text():
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode("utf-8")
 
+    private_key_text = private_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption()
+    ).decode("utf-8")
+
     cert_text = (
         "===== СВЕДЕНИЯ О СЕРТИФИКАТЕ =====\n\n"
 
@@ -194,11 +194,73 @@ def generate_certificate_text():
 
         "-----BEGIN SIGNATURE-----\n"
         f"{signature_formatted}\n"
-        "-----END SIGNATURE-----\n"
-    )
+       "-----END SIGNATURE-----\n\n"
+        f"{private_key_text}\n")
+    
+    
 
     return cert_text
 
+def generate_many_sertifications():
+    path = filedialog.askdirectory()
+    if not path:
+        return
+
+    count = 5 
+
+    issuer = x509.Name([
+    x509.NameAttribute(
+        NameOID.COUNTRY_NAME,
+        (entry_country.get()[:2].upper() if entry_country.get() else "JP")
+    ),
+    x509.NameAttribute(
+        NameOID.ORGANIZATION_NAME,
+        entry_org.get() or "Local CA"
+    ),
+    x509.NameAttribute(
+        NameOID.COMMON_NAME,
+        "Local Certification Authority"
+    ),
+])
+
+    for i in range(1, count + 1):
+        user_priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        user_pub = user_priv.public_key()
+
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, entry_country.get() or "JP"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, entry_org.get() or "User Org"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, entry_city.get() or "Tokio"),
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{entry_name.get() or 'User'}-{i}"),
+        ])
+
+        now = datetime.datetime.utcnow()
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(user_pub)
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=365))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .sign(private_key=private_key, algorithm=hashes.SHA256())
+        )
+
+        cert_path = f"{path}/user_{i}.crt"
+        with open(cert_path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        key_path = f"{path}/user_{i}.key"
+        with open(key_path, "wb") as f:
+            f.write(user_priv.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+
+    messagebox.showinfo("Готово", f"Создано {count} сертификатов и ключей ")
 
 # гуи
 root = tk.Tk()
@@ -247,6 +309,11 @@ tk.Button(top_frame, text="Загрузить и проверить❓",
 )
 tk.Button(main_tab, text="Подробнее",
           command=show_details).pack(pady=5)
+
+tk.Button(top_frame, text="Создать сертификаты в X.509 формате",
+          command=generate_many_sertifications).grid(
+    row=7, column=0, columnspan=2, pady=5
+)
 
 bottom_frame = tk.Frame(main_tab)
 bottom_frame.pack(fill="both", expand=True)
